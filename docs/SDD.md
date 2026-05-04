@@ -4,7 +4,7 @@
 **Fecha:** 2026-05-04
 **Estado:** Borrador (en construcción incremental)
 **Estándar de referencia:** IEEE 1016-2009
-**Documento relacionado:** `01-requisitos-v2.md` (SRS v0.2)
+**Documento relacionado:** `SRS.md` (SRS v0.2)
 
 ---
 
