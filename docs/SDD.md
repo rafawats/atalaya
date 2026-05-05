@@ -12,7 +12,7 @@
 
 ### 1.1 Propósito
 
-Este documento describe el diseño del sistema **Atalaya** en su versión MVP. Su objetivo es traducir los requisitos definidos en el SRS (`SRD.md`) en una solución técnica concreta, descrita con suficiente detalle para guiar la implementación.
+Este documento describe el diseño del sistema **Atalaya** en su versión MVP. Su objetivo es traducir los requisitos definidos en el SRS (`SRS.md`) en una solución técnica concreta, descrita con suficiente detalle para guiar la implementación.
 
 Está dirigido al desarrollador del proyecto y a cualquier colaborador futuro que necesite entender cómo está construido el sistema, por qué se tomaron ciertas decisiones y cómo se relacionan las piezas entre sí.
 
