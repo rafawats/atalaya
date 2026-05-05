@@ -4,7 +4,7 @@
 **Fecha:** 2026-05-05
 **Estado:** Borrador (en construcción incremental)
 **Estándar de referencia:** IEEE 1016-2009
-**Documento relacionado:** `SRD.md` (Especificación de Requisitos)
+**Documento relacionado:** `SRS.md` (Especificación de Requisitos)
 
 ---
 
@@ -45,7 +45,7 @@ Aplica el glosario definido en el SRS (sección 1.3). A continuación se añaden
 
 - IEEE Std 1016-2009: *IEEE Standard for Information Technology — Systems Design — Software Design Descriptions*.
 - IEEE Std 830-1998: *IEEE Recommended Practice for Software Requirements Specifications*.
-- `SRD.md`: Especificación de Requisitos de Software de Atalaya.
+- `SRS.md`: Especificación de Requisitos de Software de Atalaya.
 - Documentación oficial de FastAPI — https://fastapi.tiangolo.com/.
 - Documentación oficial de psutil — https://psutil.readthedocs.io/.
 - Documentación oficial de Svelte — https://svelte.dev/.
