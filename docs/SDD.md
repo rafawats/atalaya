@@ -1,10 +1,10 @@
 # Atalaya — Documento de Diseño de Software (SDD)
 
-**Versión:** 0.1
-**Fecha:** 2026-05-04
+**Versión:** 0.2
+**Fecha:** 2026-05-05
 **Estado:** Borrador (en construcción incremental)
 **Estándar de referencia:** IEEE 1016-2009
-**Documento relacionado:** `SRS.md` (SRS v0.2)
+**Documento relacionado:** `SRD.md` (Especificación de Requisitos)
 
 ---
 
@@ -12,7 +12,7 @@
 
 ### 1.1 Propósito
 
-Este documento describe el diseño del sistema **Atalaya** en su versión MVP. Su objetivo es traducir los requisitos definidos en el SRS (`SRS.md`) en una solución técnica concreta, descrita con suficiente detalle para guiar la implementación.
+Este documento describe el diseño del sistema **Atalaya** en su versión MVP. Su objetivo es traducir los requisitos definidos en el SRS (`SRD.md`) en una solución técnica concreta, descrita con suficiente detalle para guiar la implementación.
 
 Está dirigido al desarrollador del proyecto y a cualquier colaborador futuro que necesite entender cómo está construido el sistema, por qué se tomaron ciertas decisiones y cómo se relacionan las piezas entre sí.
 
@@ -45,7 +45,7 @@ Aplica el glosario definido en el SRS (sección 1.3). A continuación se añaden
 
 - IEEE Std 1016-2009: *IEEE Standard for Information Technology — Systems Design — Software Design Descriptions*.
 - IEEE Std 830-1998: *IEEE Recommended Practice for Software Requirements Specifications*.
-- `SRS.md`: Especificación de Requisitos de Software de Atalaya, v0.2.
+- `SRD.md`: Especificación de Requisitos de Software de Atalaya.
 - Documentación oficial de FastAPI — https://fastapi.tiangolo.com/.
 - Documentación oficial de psutil — https://psutil.readthedocs.io/.
 - Documentación oficial de Svelte — https://svelte.dev/.
@@ -269,7 +269,255 @@ Esta ubicación se determina mediante una librería estándar (por ejemplo `plat
 
 ## 4. Vista de datos
 
-*Pendiente. Se completará en la siguiente iteración del diseño.*
+Esta sección describe el modelo lógico y físico de los datos persistidos por Atalaya. Toda la persistencia ocurre en una única base de datos SQLite local (componente C-11).
+
+### 4.1 Modelo lógico
+
+El sistema almacena tres familias de métricas: **CPU**, **memoria RAM** y **disco**. Para cada familia se mantienen dos resoluciones temporales:
+
+- **Resolución cruda (`_raw`):** una muestra por segundo, retenida durante 1 hora.
+- **Resolución agregada por minuto (`_1min`):** una muestra por minuto, calculada a partir de las muestras crudas, retenida durante 7 días.
+
+Los datos crudos más antiguos que 1 hora se comprimen en el agregado y luego se eliminan. Los datos agregados más antiguos que 7 días se eliminan sin más procesamiento.
+
+Las dimensiones (núcleos de CPU, particiones de disco) que tienen información estática asociada se modelan en tablas independientes para evitar redundancia.
+
+### 4.2 Convenciones generales
+
+- **Timestamps:** todos los timestamps se almacenan como `INTEGER` representando segundos epoch UTC.
+- **Tamaños:** todos los valores en bytes se almacenan como `INTEGER`.
+- **Porcentajes:** se almacenan como `REAL` en el rango `0.0` a `100.0`.
+- **Claves primarias subrogadas:** se usa `INTEGER PRIMARY KEY` (rowid implícito) en tablas de dimensiones.
+- **Foreign keys:** habilitadas explícitamente al abrir la conexión (`PRAGMA foreign_keys = ON`).
+
+### 4.3 Esquema físico
+
+#### 4.3.1 Tabla `disks` (información estática de particiones)
+
+Almacena los metadatos de cada partición monitoreada. Una fila por partición.
+
+```sql
+CREATE TABLE disks (
+    id           INTEGER PRIMARY KEY,
+    mount_point  TEXT NOT NULL UNIQUE,
+    device       TEXT,
+    fstype       TEXT,
+    total_bytes  INTEGER NOT NULL
+);
+```
+
+| Campo | Descripción |
+|-------|-------------|
+| `id` | Identificador interno usado como FK en las tablas de muestras. |
+| `mount_point` | Punto de montaje (ej. `/`, `/home`, `C:\`). Único. |
+| `device` | Dispositivo subyacente (ej. `/dev/sda1`). Informativo. |
+| `fstype` | Tipo de sistema de archivos (ej. `ext4`, `ntfs`, `apfs`). Informativo. |
+| `total_bytes` | Tamaño total de la partición. Puede actualizarse si cambia. |
+
+#### 4.3.2 Tablas de CPU
+
+**`cpu_global_raw` — uso global de CPU, resolución 1s**
+
+```sql
+CREATE TABLE cpu_global_raw (
+    timestamp  INTEGER NOT NULL,
+    percent    REAL NOT NULL,
+    PRIMARY KEY (timestamp)
+);
+```
+
+**`cpu_global_1min` — uso global de CPU, resolución 1min**
+
+```sql
+CREATE TABLE cpu_global_1min (
+    timestamp     INTEGER NOT NULL,
+    percent_avg   REAL NOT NULL,
+    percent_max   REAL NOT NULL,
+    PRIMARY KEY (timestamp)
+);
+```
+
+**`cpu_core_raw` — uso por núcleo, resolución 1s**
+
+```sql
+CREATE TABLE cpu_core_raw (
+    timestamp  INTEGER NOT NULL,
+    core_id    INTEGER NOT NULL,
+    percent    REAL NOT NULL,
+    PRIMARY KEY (timestamp, core_id)
+);
+```
+
+**`cpu_core_1min` — uso por núcleo, resolución 1min**
+
+```sql
+CREATE TABLE cpu_core_1min (
+    timestamp     INTEGER NOT NULL,
+    core_id       INTEGER NOT NULL,
+    percent_avg   REAL NOT NULL,
+    percent_max   REAL NOT NULL,
+    PRIMARY KEY (timestamp, core_id)
+);
+```
+
+#### 4.3.3 Tablas de RAM
+
+**`ram_raw` — memoria, resolución 1s**
+
+```sql
+CREATE TABLE ram_raw (
+    timestamp        INTEGER NOT NULL,
+    total_bytes      INTEGER NOT NULL,
+    used_bytes       INTEGER NOT NULL,
+    available_bytes  INTEGER NOT NULL,
+    percent          REAL NOT NULL,
+    PRIMARY KEY (timestamp)
+);
+```
+
+**`ram_1min` — memoria, resolución 1min**
+
+```sql
+CREATE TABLE ram_1min (
+    timestamp        INTEGER NOT NULL,
+    total_bytes      INTEGER NOT NULL,   -- last
+    used_bytes       INTEGER NOT NULL,   -- last
+    available_bytes  INTEGER NOT NULL,   -- last
+    percent_avg      REAL NOT NULL,
+    percent_max      REAL NOT NULL,
+    PRIMARY KEY (timestamp)
+);
+```
+
+#### 4.3.4 Tablas de disco
+
+**`disk_raw` — uso por partición, resolución 1s**
+
+```sql
+CREATE TABLE disk_raw (
+    timestamp   INTEGER NOT NULL,
+    disk_id     INTEGER NOT NULL,
+    used_bytes  INTEGER NOT NULL,
+    free_bytes  INTEGER NOT NULL,
+    percent     REAL NOT NULL,
+    PRIMARY KEY (timestamp, disk_id),
+    FOREIGN KEY (disk_id) REFERENCES disks(id) ON DELETE CASCADE
+);
+```
+
+**`disk_1min` — uso por partición, resolución 1min**
+
+```sql
+CREATE TABLE disk_1min (
+    timestamp     INTEGER NOT NULL,
+    disk_id       INTEGER NOT NULL,
+    used_bytes    INTEGER NOT NULL,   -- last
+    free_bytes    INTEGER NOT NULL,   -- last
+    percent_avg   REAL NOT NULL,
+    percent_max   REAL NOT NULL,
+    PRIMARY KEY (timestamp, disk_id),
+    FOREIGN KEY (disk_id) REFERENCES disks(id) ON DELETE CASCADE
+);
+```
+
+### 4.4 Índices
+
+Las claves primarias compuestas `(timestamp, dimension)` ya proveen el índice principal necesario para las queries por rango temporal con filtro por dimensión. Para queries que necesitan recorrer solo por timestamp en tablas con dimensión adicional, se añaden índices auxiliares:
+
+```sql
+CREATE INDEX idx_cpu_core_raw_ts   ON cpu_core_raw (timestamp);
+CREATE INDEX idx_cpu_core_1min_ts  ON cpu_core_1min (timestamp);
+CREATE INDEX idx_disk_raw_ts       ON disk_raw (timestamp);
+CREATE INDEX idx_disk_1min_ts      ON disk_1min (timestamp);
+```
+
+Las tablas sin dimensión adicional (`cpu_global_*`, `ram_*`) no requieren índices auxiliares porque su clave primaria ya es solo `timestamp`.
+
+### 4.5 Política de retención y agregación
+
+#### 4.5.1 Reglas de retención
+
+| Tabla | Retención | Política |
+|-------|-----------|----------|
+| `*_raw` | 1 hora | Se eliminan filas con `timestamp < now - 3600` tras ser agregadas. |
+| `*_1min` | 7 días | Se eliminan filas con `timestamp < now - 7*86400`. |
+
+#### 4.5.2 Algoritmo de agregación
+
+El componente Agregador (C-04) ejecuta el siguiente proceso periódicamente (intervalo recomendado: 5 minutos):
+
+1. Determinar el rango de minutos completos que ya cumplieron 1 hora de antigüedad y aún no han sido agregados.
+2. Para cada minuto en ese rango y para cada métrica:
+   - Calcular `avg(percent)` y `max(percent)` para porcentajes.
+   - Tomar el último valor (`MAX(timestamp)` por grupo) para los campos `_bytes` que se agregan como "last".
+   - Insertar una fila en la tabla `_1min` correspondiente con `timestamp` igual al inicio del minuto (epoch alineado a 60s).
+3. Eliminar de la tabla `_raw` todas las filas con `timestamp` anterior al límite de 1 hora.
+4. Eliminar de la tabla `_1min` todas las filas con `timestamp` anterior al límite de 7 días.
+
+Cada paso de inserción y borrado se ejecuta dentro de una **transacción** para garantizar atomicidad.
+
+#### 4.5.3 Ejemplo conceptual de agregación
+
+Para `cpu_global_raw`, la query que produce el agregado de un minuto dado `T` (representado como epoch alineado a 60s) es conceptualmente:
+
+```sql
+INSERT INTO cpu_global_1min (timestamp, percent_avg, percent_max)
+SELECT
+    :T AS timestamp,
+    AVG(percent) AS percent_avg,
+    MAX(percent) AS percent_max
+FROM cpu_global_raw
+WHERE timestamp >= :T AND timestamp < :T + 60;
+```
+
+El patrón es análogo para las demás tablas, con los campos correspondientes.
+
+### 4.6 Estimación de volumen
+
+Estimación aproximada del crecimiento de datos en uso normal, considerando una máquina con 8 núcleos y 2 particiones:
+
+| Tabla | Filas/segundo | Filas en periodo de retención |
+|-------|---------------|-------------------------------|
+| `cpu_global_raw` | 1 | ~3,600 |
+| `cpu_core_raw` | 8 | ~28,800 |
+| `ram_raw` | 1 | ~3,600 |
+| `disk_raw` | 2 | ~7,200 |
+| `cpu_global_1min` | 1/60 | ~10,080 |
+| `cpu_core_1min` | 8/60 | ~80,640 |
+| `ram_1min` | 1/60 | ~10,080 |
+| `disk_1min` | 2/60 | ~20,160 |
+
+Total aproximado: **~165,000 filas en estado estable**. Considerando un promedio de ~80 bytes por fila incluyendo overhead de SQLite e índices, el tamaño estimado de la base de datos en uso normal es del orden de **15-30 MB**, muy por debajo del límite de 100 MB definido en RNF-13.
+
+### 4.7 Inicialización del esquema
+
+Al arrancar la aplicación, el componente de Persistencia (C-03) verifica la existencia del archivo de base de datos en la ruta determinada (sección 3.5.3). Si no existe, lo crea y ejecuta el script de inicialización con todas las sentencias `CREATE TABLE` y `CREATE INDEX` definidas arriba.
+
+Si la base de datos ya existe, se verifica la versión del esquema mediante una tabla auxiliar `schema_version` para permitir futuras migraciones:
+
+```sql
+CREATE TABLE schema_version (
+    version     INTEGER PRIMARY KEY,
+    applied_at  INTEGER NOT NULL
+);
+```
+
+La versión inicial del esquema MVP es `1`.
+
+### 4.8 Trazabilidad con requisitos
+
+| Requisito (SRS) | Elemento de diseño |
+|-----------------|---------------------|
+| RF-06 | Esquema completo (sección 4.3) |
+| RF-08 | Algoritmo de agregación (sección 4.5.2) |
+| RF-09 | Política de retención (sección 4.5.1) |
+| RD-01 | Sección 4.1 |
+| RD-02 | Esquema (sección 4.3): todas las muestras tienen timestamp + dimensión + valor |
+| RD-03 | Tablas separadas `_raw` y `_1min` (sección 4.3) |
+| RD-04 | Foreign keys en `disk_raw` y `disk_1min` (sección 4.3.4) |
+| RNF-13 | Estimación de volumen (sección 4.6) |
+
+---
 
 ## 5. Vista de interfaces
 
