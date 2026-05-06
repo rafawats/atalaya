@@ -4,7 +4,7 @@
 **Fecha:** 2026-05-06
 **Estado:** Borrador completo (todas las vistas redactadas)
 **Estándar de referencia:** IEEE 1016-2009
-**Documento relacionado:** `SRD.md` (Especificación de Requisitos)
+**Documento relacionado:** `SRS.md` (Especificación de Requisitos)
 
 ---
 
@@ -12,7 +12,7 @@
 
 ### 1.1 Propósito
 
-Este documento describe el diseño del sistema **Atalaya** en su versión MVP. Su objetivo es traducir los requisitos definidos en el SRS (`SRD.md`) en una solución técnica concreta, descrita con suficiente detalle para guiar la implementación.
+Este documento describe el diseño del sistema **Atalaya** en su versión MVP. Su objetivo es traducir los requisitos definidos en el SRS (`SRS.md`) en una solución técnica concreta, descrita con suficiente detalle para guiar la implementación.
 
 Está dirigido al desarrollador del proyecto y a cualquier colaborador futuro que necesite entender cómo está construido el sistema, por qué se tomaron ciertas decisiones y cómo se relacionan las piezas entre sí.
 
@@ -45,7 +45,7 @@ Aplica el glosario definido en el SRS (sección 1.3). A continuación se añaden
 
 - IEEE Std 1016-2009: *IEEE Standard for Information Technology — Systems Design — Software Design Descriptions*.
 - IEEE Std 830-1998: *IEEE Recommended Practice for Software Requirements Specifications*.
-- `SRD.md`: Especificación de Requisitos de Software de Atalaya.
+- `SRS.md`: Especificación de Requisitos de Software de Atalaya.
 - Documentación oficial de FastAPI — https://fastapi.tiangolo.com/.
 - Documentación oficial de psutil — https://psutil.readthedocs.io/.
 - Documentación oficial de Svelte — https://svelte.dev/.
