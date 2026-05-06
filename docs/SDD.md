@@ -1,10 +1,10 @@
 # Atalaya — Documento de Diseño de Software (SDD)
 
-**Versión:** 0.2
-**Fecha:** 2026-05-05
-**Estado:** Borrador (en construcción incremental)
+**Versión:** 0.4
+**Fecha:** 2026-05-06
+**Estado:** Borrador completo (todas las vistas redactadas)
 **Estándar de referencia:** IEEE 1016-2009
-**Documento relacionado:** `SRS.md` (Especificación de Requisitos)
+**Documento relacionado:** `SRD.md` (Especificación de Requisitos)
 
 ---
 
@@ -12,7 +12,7 @@
 
 ### 1.1 Propósito
 
-Este documento describe el diseño del sistema **Atalaya** en su versión MVP. Su objetivo es traducir los requisitos definidos en el SRS (`SRS.md`) en una solución técnica concreta, descrita con suficiente detalle para guiar la implementación.
+Este documento describe el diseño del sistema **Atalaya** en su versión MVP. Su objetivo es traducir los requisitos definidos en el SRS (`SRD.md`) en una solución técnica concreta, descrita con suficiente detalle para guiar la implementación.
 
 Está dirigido al desarrollador del proyecto y a cualquier colaborador futuro que necesite entender cómo está construido el sistema, por qué se tomaron ciertas decisiones y cómo se relacionan las piezas entre sí.
 
@@ -45,7 +45,7 @@ Aplica el glosario definido en el SRS (sección 1.3). A continuación se añaden
 
 - IEEE Std 1016-2009: *IEEE Standard for Information Technology — Systems Design — Software Design Descriptions*.
 - IEEE Std 830-1998: *IEEE Recommended Practice for Software Requirements Specifications*.
-- `SRS.md`: Especificación de Requisitos de Software de Atalaya.
+- `SRD.md`: Especificación de Requisitos de Software de Atalaya.
 - Documentación oficial de FastAPI — https://fastapi.tiangolo.com/.
 - Documentación oficial de psutil — https://psutil.readthedocs.io/.
 - Documentación oficial de Svelte — https://svelte.dev/.
@@ -56,12 +56,10 @@ El documento está organizado en vistas, según la práctica recomendada por IEE
 
 - **Sección 2:** vista de contexto y stakeholders.
 - **Sección 3:** vista de arquitectura (componentes, conexiones, despliegue).
-- **Sección 4:** vista de datos *(pendiente, se añadirá en la siguiente iteración)*.
-- **Sección 5:** vista de interfaces *(pendiente)*.
-- **Sección 6:** vista de comportamiento *(pendiente)*.
+- **Sección 4:** vista de datos (modelo, esquema SQLite, retención y agregación).
+- **Sección 5:** vista de interfaces (API REST, WebSocket, estáticos).
+- **Sección 6:** vista de comportamiento (escenarios principales).
 - **Sección 7:** decisiones de diseño (ADRs).
-
-Las secciones marcadas como pendientes se completarán a medida que se avance en la fase de diseño.
 
 ---
 
@@ -521,11 +519,575 @@ La versión inicial del esquema MVP es `1`.
 
 ## 5. Vista de interfaces
 
-*Pendiente. Se completará tras la vista de datos.*
+Esta sección describe el contrato externo del backend: las interfaces que el frontend (u otros clientes) usan para interactuar con el sistema. Se compone de una API REST sobre HTTP y un canal WebSocket para datos en tiempo real.
+
+### 5.1 Convenciones generales
+
+- **Prefijo de rutas REST:** todas las rutas de la API REST se sirven bajo `/api/`.
+- **Ruta WebSocket:** `/ws/metrics`.
+- **Content-Type:** `application/json` en todas las peticiones y respuestas REST.
+- **Timestamps:** formato ISO-8601 en UTC con sufijo `Z` (ej. `2026-05-05T14:30:00Z`). Internamente se almacenan como epoch en segundos; la conversión ocurre en la frontera de la API.
+- **Bytes:** enteros sin unidad. El cliente formatea las unidades (KB/MB/GB) en la UI.
+- **Porcentajes:** valores `REAL` en el rango `0.0`–`100.0`.
+- **Códigos de respuesta:** se usan los códigos HTTP estándar (`200`, `400`, `404`, `500`).
+
+### 5.2 Formato uniforme de error
+
+Todas las respuestas de error siguen la misma estructura:
+
+```json
+{
+  "error": {
+    "code": "INVALID_RANGE",
+    "message": "El parámetro 'to' debe ser posterior a 'from'."
+  }
+}
+```
+
+Los códigos de error específicos por endpoint se listan en cada subsección.
+
+### 5.3 Endpoints REST
+
+#### 5.3.1 `GET /api/health`
+
+Healthcheck simple. Sirve para verificar que el proceso responde.
+
+**Parámetros:** ninguno.
+
+**Respuesta `200 OK`:**
+
+```json
+{
+  "status": "ok",
+  "uptime_seconds": 3421
+}
+```
+
+#### 5.3.2 `GET /api/system/info`
+
+Información estática del host. El frontend la consulta una vez al cargar para construir la UI dinámicamente (número de cores, particiones existentes, etc.).
+
+**Parámetros:** ninguno.
+
+**Respuesta `200 OK`:**
+
+```json
+{
+  "hostname": "mi-laptop",
+  "os": {
+    "system": "Linux",
+    "release": "6.5.0-21-generic",
+    "version": "#21-Ubuntu SMP"
+  },
+  "cpu": {
+    "cores": 8,
+    "model": "AMD Ryzen 7 5800H"
+  },
+  "ram": {
+    "total_bytes": 16777216000
+  },
+  "disks": [
+    {
+      "id": 1,
+      "mount_point": "/",
+      "device": "/dev/sda1",
+      "fstype": "ext4",
+      "total_bytes": 500000000000
+    }
+  ]
+}
+```
+
+#### 5.3.3 `GET /api/metrics/current`
+
+Devuelve el snapshot actual de todas las métricas. Su utilidad principal es popular la UI antes de que llegue el primer mensaje vía WebSocket.
+
+**Parámetros:** ninguno.
+
+**Respuesta `200 OK`:**
+
+```json
+{
+  "timestamp": "2026-05-05T14:30:00Z",
+  "cpu": {
+    "global_percent": 23.5,
+    "per_core": [
+      { "core_id": 0, "percent": 18.2 },
+      { "core_id": 1, "percent": 28.7 }
+    ]
+  },
+  "ram": {
+    "total_bytes": 16777216000,
+    "used_bytes": 8500000000,
+    "available_bytes": 8277216000,
+    "percent": 50.6
+  },
+  "disks": [
+    {
+      "disk_id": 1,
+      "used_bytes": 250000000000,
+      "free_bytes": 250000000000,
+      "percent": 50.0
+    }
+  ]
+}
+```
+
+#### 5.3.4 `GET /api/metrics/cpu/history`
+
+Histórico de CPU. Devuelve en una sola respuesta el porcentaje global y el porcentaje por núcleo, agrupados por dimensión.
+
+**Parámetros (query string):**
+
+| Nombre | Tipo | Requerido | Descripción |
+|--------|------|-----------|-------------|
+| `from` | ISO-8601 UTC | sí | Inicio del rango (inclusivo). |
+| `to` | ISO-8601 UTC | sí | Fin del rango (exclusivo). |
+| `resolution` | `raw` \| `1min` | no | Override manual. Si se omite, el backend selecciona automáticamente: `raw` si `to - from <= 1h`, `1min` en caso contrario. |
+
+**Respuesta `200 OK` (resolución `raw`):**
+
+```json
+{
+  "resolution": "raw",
+  "from": "2026-05-05T13:30:00Z",
+  "to": "2026-05-05T14:30:00Z",
+  "global": [
+    { "timestamp": "2026-05-05T13:30:00Z", "percent": 22.1 },
+    { "timestamp": "2026-05-05T13:30:01Z", "percent": 24.5 }
+  ],
+  "per_core": [
+    {
+      "core_id": 0,
+      "samples": [
+        { "timestamp": "2026-05-05T13:30:00Z", "percent": 18.0 }
+      ]
+    }
+  ]
+}
+```
+
+**Respuesta `200 OK` (resolución `1min`):**
+
+```json
+{
+  "resolution": "1min",
+  "from": "2026-04-28T14:30:00Z",
+  "to": "2026-05-05T14:30:00Z",
+  "global": [
+    { "timestamp": "2026-04-28T14:30:00Z", "percent_avg": 22.1, "percent_max": 41.5 }
+  ],
+  "per_core": [
+    {
+      "core_id": 0,
+      "samples": [
+        { "timestamp": "2026-04-28T14:30:00Z", "percent_avg": 18.0, "percent_max": 35.2 }
+      ]
+    }
+  ]
+}
+```
+
+**Códigos de error:**
+
+| HTTP | `error.code` | Causa |
+|------|--------------|-------|
+| `400` | `INVALID_RANGE` | `from` >= `to`, o formato de timestamp inválido. |
+| `400` | `RANGE_TOO_LARGE` | El rango excede 7 días. |
+| `400` | `INVALID_RESOLUTION` | El valor de `resolution` no es `raw` ni `1min`. |
+
+#### 5.3.5 `GET /api/metrics/ram/history`
+
+Histórico de RAM.
+
+**Parámetros (query string):** mismos que `5.3.4` (sin `disk_id`).
+
+**Respuesta `200 OK` (resolución `raw`):**
+
+```json
+{
+  "resolution": "raw",
+  "from": "2026-05-05T13:30:00Z",
+  "to": "2026-05-05T14:30:00Z",
+  "samples": [
+    {
+      "timestamp": "2026-05-05T13:30:00Z",
+      "total_bytes": 16777216000,
+      "used_bytes": 8500000000,
+      "available_bytes": 8277216000,
+      "percent": 50.6
+    }
+  ]
+}
+```
+
+**Respuesta `200 OK` (resolución `1min`):**
+
+```json
+{
+  "resolution": "1min",
+  "from": "2026-04-28T14:30:00Z",
+  "to": "2026-05-05T14:30:00Z",
+  "samples": [
+    {
+      "timestamp": "2026-04-28T14:30:00Z",
+      "total_bytes": 16777216000,
+      "used_bytes": 8500000000,
+      "available_bytes": 8277216000,
+      "percent_avg": 50.6,
+      "percent_max": 72.3
+    }
+  ]
+}
+```
+
+**Códigos de error:** mismos que `5.3.4`.
+
+#### 5.3.6 `GET /api/metrics/disk/history`
+
+Histórico de uso de disco, agrupado por partición.
+
+**Parámetros (query string):**
+
+| Nombre | Tipo | Requerido | Descripción |
+|--------|------|-----------|-------------|
+| `from` | ISO-8601 UTC | sí | Inicio del rango (inclusivo). |
+| `to` | ISO-8601 UTC | sí | Fin del rango (exclusivo). |
+| `resolution` | `raw` \| `1min` | no | Override manual. |
+| `disk_id` | integer | no | Si se especifica, devuelve solo esa partición. Si se omite, devuelve todas. |
+
+**Respuesta `200 OK` (resolución `raw`):**
+
+```json
+{
+  "resolution": "raw",
+  "from": "2026-05-05T13:30:00Z",
+  "to": "2026-05-05T14:30:00Z",
+  "disks": [
+    {
+      "disk_id": 1,
+      "samples": [
+        {
+          "timestamp": "2026-05-05T13:30:00Z",
+          "used_bytes": 250000000000,
+          "free_bytes": 250000000000,
+          "percent": 50.0
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Respuesta `200 OK` (resolución `1min`):**
+
+```json
+{
+  "resolution": "1min",
+  "from": "2026-04-28T14:30:00Z",
+  "to": "2026-05-05T14:30:00Z",
+  "disks": [
+    {
+      "disk_id": 1,
+      "samples": [
+        {
+          "timestamp": "2026-04-28T14:30:00Z",
+          "used_bytes": 250000000000,
+          "free_bytes": 250000000000,
+          "percent_avg": 50.0,
+          "percent_max": 51.2
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Códigos de error:**
+
+| HTTP | `error.code` | Causa |
+|------|--------------|-------|
+| `400` | `INVALID_RANGE` | `from` >= `to`, o formato inválido. |
+| `400` | `RANGE_TOO_LARGE` | El rango excede 7 días. |
+| `400` | `INVALID_RESOLUTION` | Valor de `resolution` inválido. |
+| `404` | `DISK_NOT_FOUND` | `disk_id` no existe. |
+
+#### 5.3.7 Tabla resumen de errores genéricos
+
+Aplican a todos los endpoints:
+
+| HTTP | `error.code` | Causa |
+|------|--------------|-------|
+| `500` | `INTERNAL_ERROR` | Error inesperado en el servidor. |
+
+### 5.4 Interfaz WebSocket
+
+#### 5.4.1 `/ws/metrics`
+
+Canal **unidireccional servidor → cliente** que entrega snapshots de métricas en tiempo real. El cliente abre la conexión y recibe mensajes; no envía datos al servidor en el MVP.
+
+**Comportamiento:**
+
+- Al conectar, el cliente queda suscrito al bus de eventos interno (componente C-02).
+- Por cada nuevo snapshot publicado por el muestreador (~1s), el WebSocket server (C-06) envía un mensaje al cliente.
+- Si la conexión se interrumpe, el cliente es responsable de reintentar la conexión.
+- El servidor cierra la conexión limpiamente al apagarse el proceso.
+
+#### 5.4.2 Formato de mensajes
+
+Todos los mensajes son JSON con un campo `type` que indica el tipo de mensaje. En el MVP solo existe el tipo `snapshot`. El campo `type` permite añadir tipos adicionales en el futuro (ej. `alert`, `system_event`) sin romper el formato.
+
+**Mensaje `snapshot`:**
+
+```json
+{
+  "type": "snapshot",
+  "data": {
+    "timestamp": "2026-05-05T14:30:00Z",
+    "cpu": {
+      "global_percent": 23.5,
+      "per_core": [
+        { "core_id": 0, "percent": 18.2 },
+        { "core_id": 1, "percent": 28.7 }
+      ]
+    },
+    "ram": {
+      "total_bytes": 16777216000,
+      "used_bytes": 8500000000,
+      "available_bytes": 8277216000,
+      "percent": 50.6
+    },
+    "disks": [
+      {
+        "disk_id": 1,
+        "used_bytes": 250000000000,
+        "free_bytes": 250000000000,
+        "percent": 50.0
+      }
+    ]
+  }
+}
+```
+
+El contenido del campo `data` tiene **exactamente la misma estructura** que la respuesta de `GET /api/metrics/current` (sección 5.3.3). Esto permite que el frontend use el mismo parser y modelo de datos para ambos casos.
+
+### 5.5 Interfaz de archivos estáticos
+
+El servidor de estáticos (componente C-07) sirve el bundle del frontend en la **raíz** del servidor:
+
+| Ruta | Comportamiento |
+|------|----------------|
+| `GET /` | Devuelve `index.html` del frontend. |
+| `GET /assets/*` | Devuelve los assets del bundle (JS, CSS, imágenes). |
+| Cualquier otra ruta no `/api/*` ni `/ws/*` | Devuelve `index.html` (fallback para SPAs con routing del lado del cliente). |
+
+Las rutas `/api/*` y `/ws/*` quedan reservadas para la API y el WebSocket; nunca se sirven como contenido estático.
+
+### 5.6 Trazabilidad con requisitos
+
+| Requisito (SRS) | Elemento de diseño |
+|-----------------|---------------------|
+| RF-04 | `GET /api/metrics/current` (sección 5.3.3) |
+| RF-05 | `/ws/metrics` (sección 5.4) |
+| RF-07 | `GET /api/metrics/{cpu,ram,disk}/history` (secciones 5.3.4–5.3.6) |
+| RF-10 | Servidor de estáticos (sección 5.5) |
+| RF-13 | Parámetro `resolution` y selección automática (sección 5.3.4) |
+
+---
 
 ## 6. Vista de comportamiento
 
-*Pendiente.*
+Esta sección describe la interacción entre componentes a lo largo del tiempo para los escenarios más representativos del sistema. Los diagramas usan notación de secuencia simplificada en ASCII para mantener la portabilidad del documento.
+
+Los componentes se referencian por su ID definido en la sección 3.2. Las flechas representan invocaciones o mensajes; las líneas verticales representan la línea de vida de cada componente.
+
+### 6.1 Escenario: Arranque de la aplicación
+
+Ocurre una vez, al ejecutar el binario.
+
+**Disparador:** el usuario ejecuta el binario `atalaya`.
+
+**Flujo:**
+
+```
+Usuario       Proceso        Persistencia    SQLite       Muestreador     Bus       WS server    API REST    Estáticos
+  │              │                 │            │              │            │            │            │            │
+  │─ ejecuta ───▶│                 │            │              │            │            │            │            │
+  │              │── inicializa ──▶│            │              │            │            │            │            │
+  │              │                 │── ¿existe atalaya.db? ──▶│              │            │            │            │
+  │              │                 │◀── (no/sí) ──│            │              │            │            │            │
+  │              │                 │── CREATE TABLE si falta ▶│              │            │            │            │
+  │              │── inicializa Bus ──────────────────────────▶│            │            │            │            │
+  │              │── inicializa Muestreador ──────────▶        │            │            │            │            │
+  │              │── inicializa WS server ──────────────────────────────────▶│            │            │            │
+  │              │   (WS se suscribe al Bus)                                │            │            │            │
+  │              │   (Persistencia se suscribe al Bus)                      │            │            │            │
+  │              │── inicializa API REST ─────────────────────────────────────────────────▶            │            │
+  │              │── inicializa Estáticos ──────────────────────────────────────────────────────────────▶            │
+  │              │── escucha en 127.0.0.1:<puerto> ─                                                                │
+  │◀─ listo ─────│                                                                                                  │
+```
+
+**Resultado:** el proceso queda escuchando en el puerto local. Todos los componentes están inicializados y suscritos al bus según corresponda. La base de datos existe con su esquema.
+
+**Notas:**
+
+- Si la base de datos no existe, se crea con todas las tablas e índices definidos en la sección 4.3 y se inserta una fila en `schema_version` con `version = 1`.
+- Si existe, se verifica que la versión registrada coincida con la esperada. Una versión distinta dispararía una migración (no aplica en el MVP).
+
+### 6.2 Escenario: Carga inicial del dashboard
+
+Ocurre cada vez que el usuario abre `http://127.0.0.1:<puerto>` en su navegador.
+
+**Disparador:** el navegador hace una petición HTTP a la raíz del servidor.
+
+**Flujo:**
+
+```
+Navegador          Estáticos       API REST      WS server      Bus     Muestreador
+   │                   │               │             │            │            │
+   │── GET / ─────────▶│               │             │            │            │
+   │◀── index.html ────│               │             │            │            │
+   │── GET /assets/*──▶│               │             │            │            │
+   │◀── JS/CSS ────────│               │            │            │            │
+   │  (frontend Svelte se ejecuta)                                              │
+   │                                                                             │
+   │── GET /api/system/info ─────────▶│             │            │            │
+   │◀── 200 OK (hostname, cores...)──│             │            │            │
+   │                                                                             │
+   │── GET /api/metrics/current ─────▶│             │            │            │
+   │◀── 200 OK (último snapshot) ────│             │            │            │
+   │                                                                             │
+   │── WS conecta /ws/metrics ──────────────────────▶│            │            │
+   │   (suscripción al Bus)                          │── suscribe─▶│            │
+   │                                                                             │
+   │  (espera nuevos snapshots por WebSocket)                                    │
+```
+
+**Resultado:** el dashboard está renderizado con datos iniciales y queda recibiendo actualizaciones en tiempo real.
+
+**Notas:**
+
+- La petición a `/api/metrics/current` evita que el usuario vea una pantalla vacía hasta que llegue el primer mensaje WebSocket (que puede tardar hasta 1 segundo).
+- La información estática de `/api/system/info` permite al frontend dimensionar la UI (cuántos cores dibujar, cuántas particiones mostrar).
+
+### 6.3 Escenario: Ciclo de muestreo en tiempo real
+
+Ocurre continuamente, una vez por segundo, mientras la aplicación está corriendo.
+
+**Disparador:** temporizador interno del muestreador (~1s).
+
+**Flujo:**
+
+```
+Muestreador      psutil        Bus       Persistencia    SQLite      WS server     Cliente WS
+     │              │            │            │              │            │              │
+     │── lee CPU ──▶│            │            │              │            │              │
+     │◀── valores──│            │            │              │            │              │
+     │── lee RAM ──▶│            │            │              │            │              │
+     │◀── valores──│            │            │              │            │              │
+     │── lee disco ▶│            │            │              │            │              │
+     │◀── valores──│            │            │              │            │              │
+     │                                                                                    │
+     │── construye snapshot ──                                                            │
+     │── publica(snapshot) ────▶│            │              │            │              │
+     │                          │── notifica ▶│              │            │              │
+     │                          │            │── INSERT ───▶│              │            │
+     │                          │            │◀── ok ───────│              │            │
+     │                          │── notifica ─────────────────────────────▶│              │
+     │                                                                    │── envía ────▶│
+     │                                                                    │              │
+     │  (próxima iteración en ~1s)                                                        │
+```
+
+**Resultado:** el snapshot queda persistido en `*_raw` y todos los clientes WebSocket activos lo reciben.
+
+**Notas:**
+
+- La persistencia y el envío por WebSocket ocurren **en paralelo** desde la perspectiva del muestreador: este publica una vez en el bus y olvida. Si la escritura en SQLite es lenta, no bloquea el envío en tiempo real al cliente.
+- Si no hay clientes WebSocket conectados, el snapshot se persiste igual. La aplicación no para de muestrear cuando nadie mira.
+- Si la lectura de psutil falla (caso poco frecuente), el muestreador registra el error y continúa en la siguiente iteración. No se publica un snapshot incompleto.
+
+### 6.4 Escenario: Consulta de histórico
+
+Ocurre cuando el usuario cambia la ventana temporal en la UI (de "última hora" a "últimos 7 días" o viceversa).
+
+**Disparador:** evento UI que dispara una petición HTTP.
+
+**Flujo:**
+
+```
+Usuario      Cliente REST    API REST      SQLite
+   │              │              │             │
+   │── selecciona "7 días" ────▶│             │
+   │              │── GET /api/metrics/cpu/history?from=...&to=... ──▶│
+   │              │              │             │
+   │              │              │── valida parámetros ──             │
+   │              │              │── selecciona resolución (1min) ──  │
+   │              │              │── SELECT desde cpu_*_1min ───────▶│
+   │              │              │◀── filas ──────────────────────────│
+   │              │              │── construye respuesta JSON ──      │
+   │              │◀── 200 OK ───│             │
+   │              │── actualiza estado/UI ──   │
+   │◀── nuevas gráficas ─────────│             │
+```
+
+**Resultado:** el frontend actualiza las gráficas con los datos del nuevo rango.
+
+**Notas:**
+
+- La selección automática de resolución es transparente para el cliente: este solo pide un rango y recibe los datos con el detalle apropiado.
+- Si el rango excede 7 días, la API responde `400 RANGE_TOO_LARGE` antes de tocar SQLite.
+- El cliente puede forzar la resolución con el parámetro `resolution=` para casos especiales (depuración o exploración).
+
+### 6.5 Escenario: Ciclo de agregación y limpieza
+
+Ocurre periódicamente, cada ~5 minutos, en segundo plano. No es disparado por el usuario.
+
+**Disparador:** temporizador interno del agregador.
+
+**Flujo:**
+
+```
+Agregador      SQLite
+    │            │
+    │── BEGIN TRANSACTION ──▶│
+    │                        │
+    │── identifica minutos completos no agregados ─▶│
+    │◀── lista de minutos ────────────────────────│
+    │                                              │
+    │  para cada minuto T:                         │
+    │   ── SELECT AVG/MAX FROM *_raw WHERE ts ∈[T, T+60) ──▶│
+    │   ◀── valores agregados ─────────────────────────────│
+    │   ── INSERT INTO *_1min ────────────────────▶│
+    │                                              │
+    │── DELETE FROM *_raw WHERE ts < (now - 3600) ▶│
+    │── DELETE FROM *_1min WHERE ts < (now - 7d) ─▶│
+    │                                              │
+    │── COMMIT TRANSACTION ──▶│
+    │                                              │
+    │  (próxima iteración en ~5min)
+```
+
+**Resultado:** los datos antiguos se han comprimido a 1 minuto de resolución, los datos crudos ya agregados se han eliminado, y los datos agregados muy viejos se han borrado.
+
+**Notas:**
+
+- Toda la operación ocurre en una sola transacción SQL para garantizar que un fallo a mitad del proceso no deje el sistema en estado inconsistente.
+- El agregador no compite con el muestreador por SQLite: SQLite serializa las escrituras, así que las inserciones en curso se intercalan correctamente.
+- Si la aplicación se reinicia y queda más de 1 hora de datos sin agregar, el agregador procesa todos los minutos pendientes en su primera ejecución tras el arranque.
+
+### 6.6 Trazabilidad con requisitos
+
+| Requisito (SRS) | Escenario que lo ilustra |
+|-----------------|--------------------------|
+| RF-01, RF-02, RF-03 | 6.3 (Ciclo de muestreo) |
+| RF-04 | 6.2 (Carga inicial) |
+| RF-05 | 6.3 (envío vía WebSocket) |
+| RF-06 | 6.3 (persistencia tras muestreo) |
+| RF-07, RF-13 | 6.4 (Consulta de histórico) |
+| RF-08, RF-09 | 6.5 (Ciclo de agregación) |
+| RF-10 | 6.2 (carga de estáticos) |
 
 ---
 
