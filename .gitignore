@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# uv
+# uv.lock SI se commitea (lockfile)
+
+# Node / frontend
+node_modules/
+frontend/dist/
+.npm/
+.vite/
+
+# Bundle del frontend embebido en el backend (generado por scripts/build.py)
+backend/src/atalaya/_static/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Editores e IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Bases de datos locales generadas en desarrollo
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log

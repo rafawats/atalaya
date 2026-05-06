@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l \"//wsl.localhost/ubuntu/home/rafawats/atalaya/docs/SDD.md\")"
+    ]
+  }
+}
